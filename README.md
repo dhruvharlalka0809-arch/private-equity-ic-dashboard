@@ -5,9 +5,13 @@ A Streamlit dashboard for evaluating a private equity acquisition through LBO re
 ## What It Does
 
 - Builds a five-year operating forecast from historical revenue, EBITDA, capex, and working capital
-- Calculates entry enterprise value, opening debt, sponsor equity, debt paydown, exit value, MOIC, and IRR
-- Compares entry valuation against DCF-implied value and public comparable EV/EBITDA multiples
+- Calculates entry enterprise value, opening debt, sponsor equity, debt paydown, cash buildup, exit value, MOIC, and IRR
+- Models D&A, EBIT, EBT-based cash taxes, working capital investment or release, scheduled amortization, and optional cash sweep
+- Compares entry valuation against DCF-implied value and size-adjusted public comparable EV/EBITDA multiples
 - Runs sensitivity analysis across revenue growth and exit multiple assumptions
+- Compares bank case, management case, and downside case outputs
+- Tracks credit metrics including Debt / EBITDA, Net Debt / EBITDA, and interest coverage
+- Decomposes return creation through an equity value bridge across EBITDA growth, multiple movement, debt paydown, and cash buildup
 - Produces a PE-style investment committee memo with recommendation, thesis, risks, and value creation levers
 - Supports CSV upload for custom target company financials
 
@@ -52,9 +56,10 @@ python scripts/validate.py
 
 ## Portfolio Talking Points
 
-- Built an LBO model that calculates sponsor equity, debt paydown, exit equity value, MOIC, and IRR
-- Added valuation triangulation using DCF and public comparable EV/EBITDA multiples
-- Designed downside and sensitivity analysis for PE-style investment risk assessment
+- Built an LBO model that calculates sponsor equity, scheduled amortization, cash sweep, cash buildup, exit equity value, MOIC, and IRR
+- Added valuation triangulation using DCF and size-adjusted public comparable EV/EBITDA multiples
+- Designed downside, bank, and management case analysis for PE-style investment risk assessment
+- Added credit metrics and a return attribution bridge to explain where equity value creation comes from
 - Generated an investment committee memo that connects model output to a Buy / Watchlist / Pass recommendation
 
 ## Author

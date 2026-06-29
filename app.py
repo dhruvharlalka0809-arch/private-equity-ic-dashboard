@@ -8,9 +8,12 @@ from src.pe_model import (
     build_lbo_model,
     build_projection,
     build_returns_sensitivity,
+    build_scenario_summary,
+    build_value_creation_bridge,
     format_money,
     load_historical_financials,
     normalize_historical_financials,
+    replace_assumptions,
 )
 
 
@@ -48,6 +51,12 @@ with st.sidebar:
     target_margin = st.slider("Exit EBITDA margin", 0.10, 0.35, 0.205, 0.005)
     interest_rate = st.slider("Cash interest rate", 0.04, 0.15, 0.085, 0.005)
     tax_rate = st.slider("Cash tax rate", 0.00, 0.40, 0.25, 0.01)
+    capex_pct = st.slider("Capex / revenue", 0.00, 0.10, 0.04, 0.005)
+    depreciation_pct = st.slider("D&A / revenue", 0.00, 0.08, 0.03, 0.005)
+    min_cash_pct = st.slider("Minimum cash / revenue", 0.00, 0.05, 0.015, 0.005)
+    amortization_pct = st.slider("Annual amortization / opening debt", 0.00, 0.10, 0.025, 0.005)
+    cash_sweep_pct = st.slider("Excess cash sweep", 0.00, 1.00, 0.75, 0.05)
+    comp_discount = st.slider("Public comp size discount", 0.00, 0.40, 0.15, 0.025)
     st.divider()
     uploaded_file = st.file_uploader("Upload target financials", type="csv")
 
@@ -59,6 +68,12 @@ assumptions = DealAssumptions(
     target_ebitda_margin=target_margin,
     cash_interest_rate=interest_rate,
     tax_rate=tax_rate,
+    capex_pct_revenue=capex_pct,
+    depreciation_pct_revenue=depreciation_pct,
+    minimum_cash_pct_revenue=min_cash_pct,
+    mandatory_amortization_pct_opening_debt=amortization_pct,
+    cash_sweep_pct=cash_sweep_pct,
+    comp_size_discount=comp_discount,
 )
 
 try:
@@ -70,10 +85,12 @@ except Exception as exc:
 
 projection = build_projection(historical, assumptions)
 lbo, summary = build_lbo_model(historical, assumptions)
-comps = build_comps_valuation(load_public_comps(), float(historical.iloc[-1]["EBITDA"]))
+comps = build_comps_valuation(load_public_comps(), float(historical.iloc[-1]["EBITDA"]), assumptions.comp_size_discount)
 sensitivity = build_returns_sensitivity(historical, assumptions)
+scenario_summary = build_scenario_summary(historical, assumptions)
+value_bridge = build_value_creation_bridge(historical, lbo, summary, assumptions)
 
-top = st.columns(5)
+top = st.columns(6)
 with top[0]:
     metric("Recommendation", summary.recommendation)
 with top[1]:
@@ -84,11 +101,13 @@ with top[3]:
     metric("Sponsor Equity", format_money(summary.sponsor_equity))
 with top[4]:
     metric("Entry EV", format_money(summary.entry_ev))
+with top[5]:
+    metric("Exit Net Debt", format_money(max(0.0, summary.ending_debt - summary.ending_cash)))
 
 st.divider()
 
-overview_tab, lbo_tab, valuation_tab, risk_tab, memo_tab, data_tab = st.tabs(
-    ["Deal Snapshot", "LBO Model", "Valuation", "Risk & Sensitivity", "IC Memo", "Data"]
+overview_tab, lbo_tab, valuation_tab, risk_tab, bridge_tab, memo_tab, data_tab = st.tabs(
+    ["Deal Snapshot", "LBO Model", "Valuation", "Risk & Scenarios", "Value Creation", "IC Memo", "Data"]
 )
 
 with overview_tab:
@@ -109,6 +128,7 @@ with overview_tab:
         st.write(f"Exit valuation: **{exit_multiple:.1f}x EBITDA**")
         st.write(f"Opening leverage: **{debt_multiple:.1f}x EBITDA**")
         st.write(f"Exit EBITDA margin: **{target_margin:.1%}**")
+        st.write(f"Year 5 interest coverage: **{lbo.iloc[-1]['Interest_Coverage']:.1f}x**")
 
     st.markdown("#### Historical and Projected Margin")
     margin_view = pd.concat(
@@ -120,7 +140,7 @@ with overview_tab:
     st.line_chart(margin_view.set_index("Year")["EBITDA_Margin"], use_container_width=True)
 
 with lbo_tab:
-    st.subheader("LBO Sources, Uses, and Debt Paydown")
+    st.subheader("LBO Sources, Uses, Debt Schedule, and Credit Metrics")
     sources_uses = pd.DataFrame(
         {
             "Item": ["Purchase enterprise value", "Opening debt", "Sponsor equity"],
@@ -136,7 +156,38 @@ with lbo_tab:
             column_config={"Amount": st.column_config.NumberColumn("Amount", format="$%.1fM")},
         )
     with right:
-        st.bar_chart(lbo.set_index("Year")[["Beginning_Debt", "Debt_Paydown", "Ending_Debt"]], use_container_width=True)
+        st.bar_chart(
+            lbo.set_index("Year")[["Beginning_Debt", "Scheduled_Amortization", "Optional_Cash_Sweep", "Ending_Debt", "Ending_Cash"]],
+            use_container_width=True,
+        )
+
+    st.markdown("#### Credit Metrics")
+    credit_metrics = lbo[
+        [
+            "Year",
+            "Beginning_Debt",
+            "Ending_Debt",
+            "Ending_Cash",
+            "Net_Debt",
+            "Debt_to_EBITDA",
+            "Net_Debt_to_EBITDA",
+            "Interest_Coverage",
+        ]
+    ]
+    st.dataframe(
+        credit_metrics,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Beginning_Debt": st.column_config.NumberColumn("Beginning Debt", format="$%.1fM"),
+            "Ending_Debt": st.column_config.NumberColumn("Ending Debt", format="$%.1fM"),
+            "Ending_Cash": st.column_config.NumberColumn("Ending Cash", format="$%.1fM"),
+            "Net_Debt": st.column_config.NumberColumn("Net Debt", format="$%.1fM"),
+            "Debt_to_EBITDA": st.column_config.NumberColumn("Debt / EBITDA", format="%.1fx"),
+            "Net_Debt_to_EBITDA": st.column_config.NumberColumn("Net Debt / EBITDA", format="%.1fx"),
+            "Interest_Coverage": st.column_config.NumberColumn("Interest Coverage", format="%.1fx"),
+        },
+    )
 
     st.markdown("#### LBO Projection")
     st.dataframe(
@@ -146,6 +197,9 @@ with lbo_tab:
         column_config={
             "Revenue_Growth": st.column_config.NumberColumn("Revenue Growth", format="%.1f%%"),
             "EBITDA_Margin": st.column_config.NumberColumn("EBITDA Margin", format="%.1f%%"),
+            "Cash_Interest": st.column_config.NumberColumn("Cash Interest", format="$%.1fM"),
+            "LBO_Cash_Taxes": st.column_config.NumberColumn("Cash Taxes", format="$%.1fM"),
+            "Debt_Paydown": st.column_config.NumberColumn("Debt Paydown", format="$%.1fM"),
         },
     )
 
@@ -154,7 +208,7 @@ with valuation_tab:
     val_cols = st.columns(4)
     val_cols[0].metric("Entry EV", format_money(summary.entry_ev))
     val_cols[1].metric("DCF EV", format_money(summary.dcf_ev))
-    val_cols[2].metric("Median Comp Multiple", f"{comps['EV_EBITDA'].median():.1f}x")
+    val_cols[2].metric("Size-Adj. Median Comp", f"{comps['Size_Adjusted_EV_EBITDA'].median():.1f}x")
     val_cols[3].metric("Exit EV", format_money(summary.exit_ev))
 
     left, right = st.columns([1, 1])
@@ -168,7 +222,9 @@ with valuation_tab:
                 "Revenue_Growth": st.column_config.NumberColumn("Revenue Growth", format="%.1f%%"),
                 "EBITDA_Margin": st.column_config.NumberColumn("EBITDA Margin", format="%.1f%%"),
                 "EV_EBITDA": st.column_config.NumberColumn("EV / EBITDA", format="%.1fx"),
+                "Size_Adjusted_EV_EBITDA": st.column_config.NumberColumn("Size-Adjusted EV / EBITDA", format="%.1fx"),
                 "Implied_EV": st.column_config.NumberColumn("Implied EV", format="$%.1fM"),
+                "Size_Adjusted_Implied_EV": st.column_config.NumberColumn("Size-Adjusted EV", format="$%.1fM"),
             },
         )
     with right:
@@ -178,9 +234,9 @@ with valuation_tab:
                 "Enterprise Value": [
                     summary.entry_ev,
                     summary.dcf_ev,
-                    comps["Implied_EV"].min(),
-                    comps["Implied_EV"].median(),
-                    comps["Implied_EV"].max(),
+                    comps["Size_Adjusted_Implied_EV"].min(),
+                    comps["Size_Adjusted_Implied_EV"].median(),
+                    comps["Size_Adjusted_Implied_EV"].max(),
                     summary.exit_ev,
                 ],
             }
@@ -189,6 +245,21 @@ with valuation_tab:
         st.bar_chart(football.set_index("Method"), use_container_width=True)
 
 with risk_tab:
+    st.subheader("Scenario Summary")
+    st.dataframe(
+        scenario_summary,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Revenue Growth": st.column_config.NumberColumn("Revenue Growth", format="%.1f%%"),
+            "Exit EBITDA Margin": st.column_config.NumberColumn("Exit EBITDA Margin", format="%.1f%%"),
+            "Exit Multiple": st.column_config.NumberColumn("Exit Multiple", format="%.1fx"),
+            "IRR": st.column_config.NumberColumn("IRR", format="%.1f%%"),
+            "MOIC": st.column_config.NumberColumn("MOIC", format="%.2fx"),
+            "Ending Net Debt": st.column_config.NumberColumn("Ending Net Debt", format="$%.1fM"),
+        },
+    )
+
     st.subheader("IRR Sensitivity")
     formatted = sensitivity.copy()
     for column in formatted.columns:
@@ -196,14 +267,12 @@ with risk_tab:
             formatted[column] = formatted[column].map(lambda value: f"{value:.1%}")
     st.dataframe(formatted, use_container_width=True, hide_index=True)
 
-    downside_assumptions = DealAssumptions(
-        entry_multiple=entry_multiple,
+    downside_assumptions = replace_assumptions(
+        assumptions,
         exit_multiple=max(5.0, exit_multiple - 1.0),
-        debt_multiple=debt_multiple,
         revenue_growth=max(0.0, revenue_growth - 0.035),
         target_ebitda_margin=max(0.10, target_margin - 0.025),
         cash_interest_rate=interest_rate + 0.01,
-        tax_rate=tax_rate,
     )
     _, downside = build_lbo_model(historical, downside_assumptions)
     risk_cols = st.columns(3)
@@ -216,6 +285,21 @@ with risk_tab:
     st.write("- Are margin improvements operationally credible or just spreadsheet expansion?")
     st.write("- Can the company service debt in a higher-rate or lower-growth environment?")
     st.write("- What exit buyer universe supports the underwritten exit multiple?")
+
+with bridge_tab:
+    st.subheader("Equity Value Creation Bridge")
+    st.bar_chart(value_bridge.set_index("Bridge Item"), use_container_width=True)
+    st.dataframe(
+        value_bridge,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Equity Value Contribution": st.column_config.NumberColumn("Equity Value Contribution", format="$%.1fM")
+        },
+    )
+
+    st.markdown("#### Why This Matters")
+    st.write("This decomposes the return into operating growth, multiple movement, balance sheet deleveraging, and cash buildup. PE interviewers care about where the return comes from, not only the final IRR.")
 
 with memo_tab:
     st.subheader("Investment Committee Memo")

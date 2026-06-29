@@ -15,7 +15,12 @@ class DealAssumptions:
     tax_rate: float = 0.25
     cash_interest_rate: float = 0.085
     capex_pct_revenue: float = 0.04
+    depreciation_pct_revenue: float = 0.03
     nwc_pct_revenue: float = 0.13
+    minimum_cash_pct_revenue: float = 0.015
+    mandatory_amortization_pct_opening_debt: float = 0.025
+    cash_sweep_pct: float = 0.75
+    comp_size_discount: float = 0.15
     wacc: float = 0.11
     terminal_growth: float = 0.025
     hold_years: int = 5
@@ -29,6 +34,7 @@ class ReturnsSummary:
     exit_ev: float
     exit_equity: float
     ending_debt: float
+    ending_cash: float
     moic: float
     irr: float
     dcf_ev: float
@@ -73,9 +79,11 @@ def build_projection(historical: pd.DataFrame, assumptions: DealAssumptions) -> 
         ebitda_margin = base_margin + (margin_step * year_index)
         ebitda = revenue * ebitda_margin
         capex = revenue * assumptions.capex_pct_revenue
+        depreciation = revenue * assumptions.depreciation_pct_revenue
+        ebit = ebitda - depreciation
         nwc = revenue * assumptions.nwc_pct_revenue
-        nwc_investment = max(0.0, nwc - previous_nwc)
-        cash_taxes = max(0.0, ebitda * assumptions.tax_rate)
+        nwc_investment = nwc - previous_nwc
+        cash_taxes = max(0.0, ebit * assumptions.tax_rate)
         unlevered_fcf = ebitda - cash_taxes - capex - nwc_investment
         rows.append(
             {
@@ -84,6 +92,8 @@ def build_projection(historical: pd.DataFrame, assumptions: DealAssumptions) -> 
                 "Revenue_Growth": assumptions.revenue_growth,
                 "EBITDA_Margin": ebitda_margin,
                 "EBITDA": ebitda,
+                "Depreciation": depreciation,
+                "EBIT": ebit,
                 "Capex": capex,
                 "Net_Working_Capital": nwc,
                 "NWC_Investment": nwc_investment,
@@ -105,31 +115,69 @@ def build_lbo_model(historical: pd.DataFrame, assumptions: DealAssumptions) -> t
     opening_debt = entry_ebitda * assumptions.debt_multiple
     sponsor_equity = entry_ev - opening_debt
     debt_balance = opening_debt
+    cash_balance = 0.0
 
     rows = []
     for _, row in projection.iterrows():
         interest = debt_balance * assumptions.cash_interest_rate
-        cash_available_for_debt = max(0.0, float(row["Unlevered_FCF"]) - interest)
-        debt_paydown = min(debt_balance, cash_available_for_debt)
+        ebt = float(row["EBIT"]) - interest
+        cash_taxes = max(0.0, ebt * assumptions.tax_rate)
+        cash_flow_before_debt_paydown = (
+            float(row["EBITDA"])
+            - cash_taxes
+            - float(row["Capex"])
+            - float(row["NWC_Investment"])
+            - interest
+        )
+        minimum_cash = float(row["Revenue"]) * assumptions.minimum_cash_pct_revenue
+        available_cash = max(0.0, cash_balance + cash_flow_before_debt_paydown - minimum_cash)
+        scheduled_amortization = min(
+            debt_balance,
+            available_cash,
+            opening_debt * assumptions.mandatory_amortization_pct_opening_debt,
+        )
+        cash_after_amortization = max(0.0, available_cash - scheduled_amortization)
+        optional_sweep = min(
+            debt_balance - scheduled_amortization,
+            cash_after_amortization * assumptions.cash_sweep_pct,
+        )
+        debt_paydown = scheduled_amortization + optional_sweep
         ending_debt = debt_balance - debt_paydown
-        levered_fcf = float(row["Unlevered_FCF"]) - interest - debt_paydown
+        ending_cash = max(0.0, cash_balance + cash_flow_before_debt_paydown - debt_paydown)
+        levered_fcf_after_debt_paydown = ending_cash - cash_balance
+        interest_coverage = divide(float(row["EBITDA"]), interest)
+        net_debt = max(0.0, ending_debt - ending_cash)
         rows.append(
             {
                 **row.to_dict(),
                 "Beginning_Debt": debt_balance,
+                "Beginning_Cash": cash_balance,
                 "Cash_Interest": interest,
+                "EBT": ebt,
+                "LBO_Cash_Taxes": cash_taxes,
+                "Cash_Flow_Before_Debt_Paydown": cash_flow_before_debt_paydown,
+                "Minimum_Cash": minimum_cash,
+                "Scheduled_Amortization": scheduled_amortization,
+                "Optional_Cash_Sweep": optional_sweep,
                 "Debt_Paydown": debt_paydown,
                 "Ending_Debt": ending_debt,
-                "Levered_FCF_After_Debt_Paydown": levered_fcf,
+                "Ending_Cash": ending_cash,
+                "Net_Debt": net_debt,
+                "Debt_to_EBITDA": divide(ending_debt, float(row["EBITDA"])),
+                "Net_Debt_to_EBITDA": divide(net_debt, float(row["EBITDA"])),
+                "Interest_Coverage": interest_coverage,
+                "Levered_FCF_After_Debt_Paydown": levered_fcf_after_debt_paydown,
             }
         )
         debt_balance = ending_debt
+        cash_balance = ending_cash
 
     lbo = pd.DataFrame(rows)
     exit_ebitda = float(lbo.iloc[-1]["EBITDA"])
     exit_ev = exit_ebitda * assumptions.exit_multiple
     ending_debt = float(lbo.iloc[-1]["Ending_Debt"])
-    exit_equity = exit_ev - ending_debt
+    ending_cash = float(lbo.iloc[-1]["Ending_Cash"])
+    exit_equity = exit_ev - ending_debt + ending_cash
     moic = divide(exit_equity, sponsor_equity)
     irr = calculate_irr([-sponsor_equity] + [0.0] * (assumptions.hold_years - 1) + [exit_equity])
     dcf_ev = calculate_dcf_ev(projection, assumptions)
@@ -142,6 +190,7 @@ def build_lbo_model(historical: pd.DataFrame, assumptions: DealAssumptions) -> t
         exit_ev=exit_ev,
         exit_equity=exit_equity,
         ending_debt=ending_debt,
+        ending_cash=ending_cash,
         moic=moic,
         irr=irr,
         dcf_ev=dcf_ev,
@@ -204,7 +253,12 @@ def build_returns_sensitivity(historical: pd.DataFrame, assumptions: DealAssumpt
                 tax_rate=assumptions.tax_rate,
                 cash_interest_rate=assumptions.cash_interest_rate,
                 capex_pct_revenue=assumptions.capex_pct_revenue,
+                depreciation_pct_revenue=assumptions.depreciation_pct_revenue,
                 nwc_pct_revenue=assumptions.nwc_pct_revenue,
+                minimum_cash_pct_revenue=assumptions.minimum_cash_pct_revenue,
+                mandatory_amortization_pct_opening_debt=assumptions.mandatory_amortization_pct_opening_debt,
+                cash_sweep_pct=assumptions.cash_sweep_pct,
+                comp_size_discount=assumptions.comp_size_discount,
                 wacc=assumptions.wacc,
                 terminal_growth=assumptions.terminal_growth,
                 hold_years=assumptions.hold_years,
@@ -215,10 +269,77 @@ def build_returns_sensitivity(historical: pd.DataFrame, assumptions: DealAssumpt
     return pd.DataFrame(rows)
 
 
-def build_comps_valuation(comps: pd.DataFrame, entry_ebitda: float) -> pd.DataFrame:
+def build_comps_valuation(comps: pd.DataFrame, entry_ebitda: float, size_discount: float = 0.15) -> pd.DataFrame:
     output = comps.copy()
     output["Implied_EV"] = output["EV_EBITDA"] * entry_ebitda
+    output["Size_Adjusted_EV_EBITDA"] = output["EV_EBITDA"] * (1 - size_discount)
+    output["Size_Adjusted_Implied_EV"] = output["Size_Adjusted_EV_EBITDA"] * entry_ebitda
     return output.sort_values("EV_EBITDA").reset_index(drop=True)
+
+
+def build_scenario_summary(historical: pd.DataFrame, assumptions: DealAssumptions) -> pd.DataFrame:
+    scenarios = [
+        ("Bank case", assumptions.revenue_growth - 0.025, assumptions.target_ebitda_margin - 0.015, assumptions.exit_multiple - 0.5),
+        ("Management case", assumptions.revenue_growth, assumptions.target_ebitda_margin, assumptions.exit_multiple),
+        ("Downside case", max(0.0, assumptions.revenue_growth - 0.055), max(0.10, assumptions.target_ebitda_margin - 0.035), max(5.0, assumptions.exit_multiple - 1.25)),
+    ]
+    rows = []
+    for name, growth, margin, exit_multiple in scenarios:
+        scenario = replace_assumptions(
+            assumptions,
+            revenue_growth=growth,
+            target_ebitda_margin=margin,
+            exit_multiple=exit_multiple,
+        )
+        _, summary = build_lbo_model(historical, scenario)
+        rows.append(
+            {
+                "Scenario": name,
+                "Revenue Growth": growth,
+                "Exit EBITDA Margin": margin,
+                "Exit Multiple": exit_multiple,
+                "IRR": summary.irr,
+                "MOIC": summary.moic,
+                "Ending Net Debt": max(0.0, summary.ending_debt - summary.ending_cash),
+                "Recommendation": summary.recommendation,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_value_creation_bridge(historical: pd.DataFrame, lbo: pd.DataFrame, summary: ReturnsSummary, assumptions: DealAssumptions) -> pd.DataFrame:
+    normalized = normalize_historical_financials(historical)
+    entry_ebitda = float(normalized.iloc[-1]["EBITDA"])
+    exit_ebitda = float(lbo.iloc[-1]["EBITDA"])
+    ebitda_growth_value = (exit_ebitda - entry_ebitda) * assumptions.entry_multiple
+    multiple_expansion_value = exit_ebitda * (assumptions.exit_multiple - assumptions.entry_multiple)
+    debt_paydown_value = summary.opening_debt - summary.ending_debt
+    cash_buildup_value = summary.ending_cash
+    modeled_exit_equity = (
+        summary.sponsor_equity
+        + ebitda_growth_value
+        + multiple_expansion_value
+        + debt_paydown_value
+        + cash_buildup_value
+    )
+    unexplained = summary.exit_equity - modeled_exit_equity
+    rows = [
+        ("Sponsor equity at entry", summary.sponsor_equity),
+        ("EBITDA growth", ebitda_growth_value),
+        ("Multiple expansion / contraction", multiple_expansion_value),
+        ("Debt paydown", debt_paydown_value),
+        ("Cash buildup", cash_buildup_value),
+    ]
+    if abs(unexplained) > 0.01:
+        rows.append(("Other / rounding", unexplained))
+    rows.append(("Exit equity value", summary.exit_equity))
+    return pd.DataFrame(rows, columns=["Bridge Item", "Equity Value Contribution"])
+
+
+def replace_assumptions(assumptions: DealAssumptions, **updates) -> DealAssumptions:
+    values = assumptions.__dict__.copy()
+    values.update(updates)
+    return DealAssumptions(**values)
 
 
 def build_investment_memo(summary: ReturnsSummary, assumptions: DealAssumptions, company_name: str) -> str:
@@ -232,7 +353,7 @@ def build_investment_memo(summary: ReturnsSummary, assumptions: DealAssumptions,
 
 **Returns case:** The base case generates a {summary.moic:.2f}x MOIC and {summary.irr:.1%} IRR over {assumptions.hold_years} years. Sponsor equity required is {format_money(summary.sponsor_equity)} against entry enterprise value of {format_money(summary.entry_ev)}.
 
-**Value creation levers:** The model assumes {assumptions.revenue_growth:.1%} annual revenue growth and margin expansion to {assumptions.target_ebitda_margin:.1%}. Debt falls from {format_money(summary.opening_debt)} to {format_money(summary.ending_debt)} by exit.
+**Value creation levers:** The model assumes {assumptions.revenue_growth:.1%} annual revenue growth and margin expansion to {assumptions.target_ebitda_margin:.1%}. Debt falls from {format_money(summary.opening_debt)} to {format_money(summary.ending_debt)} and cash builds to {format_money(summary.ending_cash)} by exit.
 
 **Valuation view:** DCF-implied enterprise value is {format_money(summary.dcf_ev)}, compared with entry enterprise value of {format_money(summary.entry_ev)}.
 
