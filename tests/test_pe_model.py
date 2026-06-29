@@ -7,6 +7,7 @@ from src.pe_model import (
     build_comps_valuation,
     build_investment_memo,
     build_lbo_model,
+    build_memo_context,
     build_projection,
     build_returns_sensitivity,
     build_scenario_summary,
@@ -94,14 +95,19 @@ class PrivateEquityModelTests(unittest.TestCase):
         self.assertEqual(set(scenarios["Scenario"]), {"Bank case", "Management case", "Downside case"})
         self.assertIn("Debt paydown", set(bridge["Bridge Item"]))
         self.assertIn("Exit equity value", set(bridge["Bridge Item"]))
+        self.assertIn("Convention", bridge.columns)
 
     def test_memo_contains_recommendation_and_returns(self):
-        _, summary = build_lbo_model(self.historical, self.assumptions)
-        memo = build_investment_memo(summary, self.assumptions, "TestCo")
+        lbo, summary = build_lbo_model(self.historical, self.assumptions)
+        context = build_memo_context(self.historical, self.assumptions, lbo)
+        memo = build_investment_memo(summary, self.assumptions, "TestCo", context)
 
         self.assertIn("Investment Committee Memo", memo)
         self.assertIn("TestCo", memo)
         self.assertIn("MOIC", memo)
+        self.assertIn("Downside case", memo)
+        self.assertIn("No interim dividend recap", memo)
+        self.assertIn("DCF uses unlevered FCF", memo)
 
 
 if __name__ == "__main__":

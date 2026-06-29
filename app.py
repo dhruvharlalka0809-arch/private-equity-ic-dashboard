@@ -6,6 +6,7 @@ from src.pe_model import (
     build_comps_valuation,
     build_investment_memo,
     build_lbo_model,
+    build_memo_context,
     build_projection,
     build_returns_sensitivity,
     build_scenario_summary,
@@ -89,6 +90,7 @@ comps = build_comps_valuation(load_public_comps(), float(historical.iloc[-1]["EB
 sensitivity = build_returns_sensitivity(historical, assumptions)
 scenario_summary = build_scenario_summary(historical, assumptions)
 value_bridge = build_value_creation_bridge(historical, lbo, summary, assumptions)
+memo_context = build_memo_context(historical, assumptions, lbo)
 
 top = st.columns(6)
 with top[0]:
@@ -300,10 +302,11 @@ with bridge_tab:
 
     st.markdown("#### Why This Matters")
     st.write("This decomposes the return into operating growth, multiple movement, balance sheet deleveraging, and cash buildup. PE interviewers care about where the return comes from, not only the final IRR.")
+    st.caption("Convention: EBITDA growth is valued at the entry multiple; multiple expansion or contraction is applied to exit EBITDA.")
 
 with memo_tab:
     st.subheader("Investment Committee Memo")
-    memo = build_investment_memo(summary, assumptions, company_name)
+    memo = build_investment_memo(summary, assumptions, company_name, memo_context)
     st.markdown(memo)
     st.download_button(
         "Download IC memo",

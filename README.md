@@ -12,7 +12,7 @@ A Streamlit dashboard for evaluating a private equity acquisition through LBO re
 - Compares bank case, management case, and downside case outputs
 - Tracks credit metrics including Debt / EBITDA, Net Debt / EBITDA, and interest coverage
 - Decomposes return creation through an equity value bridge across EBITDA growth, multiple movement, debt paydown, and cash buildup
-- Produces a PE-style investment committee memo with recommendation, thesis, risks, and value creation levers
+- Produces a PE-style investment committee memo with recommendation, downside case, credit metrics, model notes, thesis, risks, and value creation levers
 - Supports CSV upload for custom target company financials
 
 ## Why This Project Matters
@@ -60,6 +60,7 @@ python scripts/validate.py
 - Added valuation triangulation using DCF and size-adjusted public comparable EV/EBITDA multiples
 - Designed downside, bank, and management case analysis for PE-style investment risk assessment
 - Added credit metrics and a return attribution bridge to explain where equity value creation comes from
+- Disclosed key model conventions, including no interim sponsor distributions and different tax bases for enterprise DCF versus levered LBO returns
 - Generated an investment committee memo that connects model output to a Buy / Watchlist / Pass recommendation
 
 ## Author

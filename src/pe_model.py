@@ -42,6 +42,18 @@ class ReturnsSummary:
     recommendation_reason: str
 
 
+@dataclass(frozen=True)
+class MemoContext:
+    downside_irr: float
+    downside_moic: float
+    downside_net_debt_to_ebitda: float
+    base_net_debt_to_ebitda: float
+    base_interest_coverage: float
+    bridge_convention: str = "EBITDA growth valued at entry multiple; multiple movement applied to exit EBITDA"
+    interim_distribution_note: str = "No interim dividend recap or sponsor distribution is assumed; excess cash accumulates until exit."
+    dcf_tax_note: str = "DCF uses unlevered FCF taxed on EBIT, while the LBO uses levered EBT after cash interest."
+
+
 def load_historical_financials(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     return normalize_historical_financials(df)
@@ -333,7 +345,30 @@ def build_value_creation_bridge(historical: pd.DataFrame, lbo: pd.DataFrame, sum
     if abs(unexplained) > 0.01:
         rows.append(("Other / rounding", unexplained))
     rows.append(("Exit equity value", summary.exit_equity))
-    return pd.DataFrame(rows, columns=["Bridge Item", "Equity Value Contribution"])
+    bridge = pd.DataFrame(rows, columns=["Bridge Item", "Equity Value Contribution"])
+    bridge["Convention"] = "EBITDA growth valued at entry multiple"
+    bridge.loc[bridge["Bridge Item"] == "Multiple expansion / contraction", "Convention"] = "Applied to exit EBITDA"
+    bridge.loc[bridge["Bridge Item"].isin(["Debt paydown", "Cash buildup"]), "Convention"] = "Balance sheet value creation"
+    bridge.loc[bridge["Bridge Item"].isin(["Sponsor equity at entry", "Exit equity value"]), "Convention"] = "Equity value"
+    return bridge
+
+
+def build_memo_context(historical: pd.DataFrame, assumptions: DealAssumptions, lbo: pd.DataFrame) -> MemoContext:
+    downside_assumptions = replace_assumptions(
+        assumptions,
+        exit_multiple=max(5.0, assumptions.exit_multiple - 1.0),
+        revenue_growth=max(0.0, assumptions.revenue_growth - 0.035),
+        target_ebitda_margin=max(0.10, assumptions.target_ebitda_margin - 0.025),
+        cash_interest_rate=assumptions.cash_interest_rate + 0.01,
+    )
+    downside_lbo, downside_summary = build_lbo_model(historical, downside_assumptions)
+    return MemoContext(
+        downside_irr=downside_summary.irr,
+        downside_moic=downside_summary.moic,
+        downside_net_debt_to_ebitda=float(downside_lbo.iloc[-1]["Net_Debt_to_EBITDA"]),
+        base_net_debt_to_ebitda=float(lbo.iloc[-1]["Net_Debt_to_EBITDA"]),
+        base_interest_coverage=float(lbo.iloc[-1]["Interest_Coverage"]),
+    )
 
 
 def replace_assumptions(assumptions: DealAssumptions, **updates) -> DealAssumptions:
@@ -342,7 +377,17 @@ def replace_assumptions(assumptions: DealAssumptions, **updates) -> DealAssumpti
     return DealAssumptions(**values)
 
 
-def build_investment_memo(summary: ReturnsSummary, assumptions: DealAssumptions, company_name: str) -> str:
+def build_investment_memo(summary: ReturnsSummary, assumptions: DealAssumptions, company_name: str, context: MemoContext | None = None) -> str:
+    downside_line = ""
+    credit_line = ""
+    assumptions_line = ""
+    bridge_line = ""
+    if context:
+        downside_line = f"\n**Downside case:** Under the downside case, IRR falls to {context.downside_irr:.1%}, MOIC falls to {context.downside_moic:.2f}x, and year-five net leverage is {context.downside_net_debt_to_ebitda:.1f}x EBITDA.\n"
+        credit_line = f"\n**Credit view:** Base case year-five net leverage is {context.base_net_debt_to_ebitda:.1f}x EBITDA and interest coverage is {context.base_interest_coverage:.1f}x.\n"
+        assumptions_line = f"\n**Modeling notes:** {context.interim_distribution_note} {context.dcf_tax_note}\n"
+        bridge_line = f"\n**Value bridge convention:** {context.bridge_convention}.\n"
+
     return f"""### Investment Committee Memo
 
 **Target:** {company_name}
@@ -352,10 +397,14 @@ def build_investment_memo(summary: ReturnsSummary, assumptions: DealAssumptions,
 **Deal thesis:** Acquire a defensible middle-market business at {assumptions.entry_multiple:.1f}x EBITDA and underwrite value creation through revenue growth, EBITDA margin expansion, and debt paydown.
 
 **Returns case:** The base case generates a {summary.moic:.2f}x MOIC and {summary.irr:.1%} IRR over {assumptions.hold_years} years. Sponsor equity required is {format_money(summary.sponsor_equity)} against entry enterprise value of {format_money(summary.entry_ev)}.
+{downside_line}
+{credit_line}
 
 **Value creation levers:** The model assumes {assumptions.revenue_growth:.1%} annual revenue growth and margin expansion to {assumptions.target_ebitda_margin:.1%}. Debt falls from {format_money(summary.opening_debt)} to {format_money(summary.ending_debt)} and cash builds to {format_money(summary.ending_cash)} by exit.
+{bridge_line}
 
 **Valuation view:** DCF-implied enterprise value is {format_money(summary.dcf_ev)}, compared with entry enterprise value of {format_money(summary.entry_ev)}.
+{assumptions_line}
 
 **Key risks:** Entry multiple discipline, margin execution, leverage tolerance, cash conversion, and exit multiple compression.
 
